@@ -1,1 +1,5 @@
-ultralytics, opencv-python, gradio,smtplib
+ultralytics 
+opencv-python
+gradio
+smtplib
+streamlit
