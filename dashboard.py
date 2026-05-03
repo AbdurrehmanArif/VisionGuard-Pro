@@ -674,11 +674,11 @@ with tab2:
             events = df['event'].value_counts().reset_index()
             fig = px.pie(events, values='count', names='event',
                          title='Event Distribution',
-                         hole=0.4,
-                         color_discrete_sequence=px.colors.sequential.RdBu)
-            fig.update_layout(paper_bgcolor='rgba(0,0,0,0)',
-                              plot_bgcolor='rgba(0,0,0,0)',
-                              font_color='white')
+                         hole=0.5,
+                         template='plotly_dark',
+                         color_discrete_sequence=px.colors.sequential.Tealgrn)
+            fig.update_traces(textposition='inside', textinfo='percent+label')
+            fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
             st.plotly_chart(fig, use_container_width=True)
 
         with col2:
@@ -688,43 +688,61 @@ with tab2:
                 fig3 = px.bar(person_counts, x='Person', y='Distraction Count',
                               title='Most Distracted Individuals',
                               color='Distraction Count',
-                              color_continuous_scale='Magma')
-                fig3.update_layout(paper_bgcolor='rgba(0,0,0,0)',
-                                   plot_bgcolor='rgba(0,0,0,0)',
-                                   font_color='white')
+                              text_auto=True,
+                              template='plotly_dark',
+                              color_continuous_scale='Sunsetdark')
+                fig3.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
                 st.plotly_chart(fig3, use_container_width=True)
             else:
                 st.info("No person distraction data available yet.")
 
         st.divider()
-        st.markdown("### ⏱️ Time-Based Analytics")
+        st.markdown("### ⏱️ Time-Based Analytics & Severity")
         col3, col4 = st.columns(2)
 
         with col3:
             if not alerts_only.empty:
-                fig2 = px.bar(alerts_only, x='time', y='duration',
-                              title='Alert Durations (seconds)',
-                              color='duration',
-                              color_continuous_scale='Reds')
-                fig2.update_layout(paper_bgcolor='rgba(0,0,0,0)',
-                                   plot_bgcolor='rgba(0,0,0,0)',
-                                   font_color='white')
-                st.plotly_chart(fig2, use_container_width=True)
+                avg_duration = alerts_only['duration'].mean()
+                fig_gauge = go.Figure(go.Indicator(
+                    mode = "gauge+number",
+                    value = avg_duration,
+                    title = {'text': "Average Distraction Duration (sec)", 'font': {'size': 20}},
+                    gauge = {
+                        'axis': {'range': [None, max(60, alerts_only['duration'].max() + 10)]},
+                        'bar': {'color': "#ff4b4b"},
+                        'steps' : [
+                            {'range': [0, 15], 'color': "rgba(255,255,255,0.1)"},
+                            {'range': [15, 30], 'color': "rgba(255,255,255,0.2)"}],
+                    }
+                ))
+                fig_gauge.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)')
+                st.plotly_chart(fig_gauge, use_container_width=True)
 
         with col4:
             if not alerts_only.empty:
-                # Add a dummy count column to visualize frequency
-                alerts_timeline = alerts_only.copy()
-                alerts_timeline['Count'] = 1
-                fig4 = px.line(alerts_timeline, x='time', y='Count', markers=True,
-                               title='Timeline of Distraction Alerts',
-                               line_shape='spline')
-                fig4.update_traces(line_color='#ff4444', marker=dict(size=10, color='yellow'))
-                fig4.update_layout(paper_bgcolor='rgba(0,0,0,0)',
-                                   plot_bgcolor='rgba(0,0,0,0)',
-                                   font_color='white',
-                                   yaxis_title="Alert Triggered")
+                # Add cumulative count for an area chart
+                alerts_timeline = alerts_only.sort_values(by='time').copy()
+                alerts_timeline['Cumulative Alerts'] = range(1, len(alerts_timeline) + 1)
+                
+                fig4 = px.area(alerts_timeline, x='time', y='Cumulative Alerts',
+                               title='Cumulative Distraction Growth Over Time',
+                               template='plotly_dark',
+                               color_discrete_sequence=['#ff4444'])
+                fig4.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
                 st.plotly_chart(fig4, use_container_width=True)
+                
+        st.divider()
+        st.markdown("### 📊 Distraction Length Distribution")
+        if not alerts_only.empty:
+            fig_hist = px.histogram(alerts_only, x='duration', nbins=10,
+                                    title='Frequency of Distraction Lengths',
+                                    template='plotly_dark',
+                                    color_discrete_sequence=['#00cc44'],
+                                    labels={'duration': 'Duration (Seconds)'},
+                                    text_auto=True)
+            fig_hist.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+            st.plotly_chart(fig_hist, use_container_width=True)
+
     else:
         st.info("NO DATA FOUND — Start the detection to collect data!")
 
