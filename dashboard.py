@@ -695,31 +695,55 @@ with tab2:
 
     if not df.empty:
 
+        CHART_LAYOUT = dict(
+            paper_bgcolor='rgba(14,17,23,0.95)',
+            plot_bgcolor='rgba(30,33,48,0.7)',
+            font=dict(family='Inter, sans-serif', size=13, color='#c9d1d9'),
+            title_font=dict(size=17, color='#ffffff', family='Inter, sans-serif'),
+            margin=dict(l=20, r=20, t=50, b=30),
+            hoverlabel=dict(bgcolor='#1e2130', font_size=13, font_family='Inter'),
+        )
+
         st.markdown("### 📈 Top-Level Analytics")
         col1, col2 = st.columns(2)
 
         with col1:
             events = df['event'].value_counts().reset_index()
             fig = px.pie(events, values='count', names='event',
-                         title='Event Distribution',
-                         hole=0.5,
-                         template='plotly_dark',
-                         color_discrete_sequence=px.colors.sequential.Tealgrn)
-            fig.update_traces(textposition='inside', textinfo='percent+label')
-            fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+                         title='🎯 Event Distribution',
+                         hole=0.55,
+                         color_discrete_sequence=['#ff4b4b','#00e5ff','#ff9f43','#26de81','#a55eea'])
+            fig.update_traces(
+                textposition='inside',
+                textinfo='percent+label',
+                textfont_size=12,
+                marker=dict(line=dict(color='#0e1117', width=3))
+            )
+            fig.update_layout(**CHART_LAYOUT)
             st.plotly_chart(fig, use_container_width=True)
 
         with col2:
             if not alerts_only.empty and 'person' in df.columns:
                 person_counts = alerts_only['person'].value_counts().reset_index()
                 person_counts.columns = ['Person', 'Distraction Count']
-                fig3 = px.bar(person_counts, x='Person', y='Distraction Count',
-                              title='Most Distracted Individuals',
-                              color='Distraction Count',
-                              text_auto=True,
-                              template='plotly_dark',
-                              color_continuous_scale='Sunsetdark')
-                fig3.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+                fig3 = go.Figure(go.Bar(
+                    x=person_counts['Person'],
+                    y=person_counts['Distraction Count'],
+                    text=person_counts['Distraction Count'],
+                    textposition='outside',
+                    marker=dict(
+                        color=person_counts['Distraction Count'],
+                        colorscale=[[0, '#ff9f43'], [0.5, '#ee5a24'], [1.0, '#ff0000']],
+                        line=dict(color='rgba(255,75,75,0.4)', width=1.5)
+                    ),
+                    hovertemplate="<b>%{x}</b><br>Distractions: %{y}<extra></extra>"
+                ))
+                fig3.update_layout(
+                    title='👥 Most Distracted Individuals',
+                    xaxis_tickangle=-20,
+                    yaxis=dict(gridcolor='rgba(255,255,255,0.06)'),
+                    **CHART_LAYOUT
+                )
                 st.plotly_chart(fig3, use_container_width=True)
             else:
                 st.info("No person distraction data available yet.")
@@ -731,44 +755,74 @@ with tab2:
         with col3:
             if not alerts_only.empty:
                 avg_duration = alerts_only['duration'].mean()
+                max_range = max(60, int(alerts_only['duration'].max()) + 10)
                 fig_gauge = go.Figure(go.Indicator(
-                    mode = "gauge+number",
-                    value = avg_duration,
-                    title = {'text': "Average Distraction Duration (sec)", 'font': {'size': 20}},
-                    gauge = {
-                        'axis': {'range': [None, max(60, alerts_only['duration'].max() + 10)]},
-                        'bar': {'color': "#ff4b4b"},
-                        'steps' : [
-                            {'range': [0, 15], 'color': "rgba(255,255,255,0.1)"},
-                            {'range': [15, 30], 'color': "rgba(255,255,255,0.2)"}],
+                    mode="gauge+number+delta",
+                    value=avg_duration,
+                    delta={'reference': 15, 'increasing': {'color': '#ff4b4b'}, 'decreasing': {'color': '#26de81'}},
+                    title={'text': "Avg Distraction Duration (sec)", 'font': {'size': 16, 'color': '#ffffff'}},
+                    number={'font': {'color': '#ff4b4b', 'size': 42}},
+                    gauge={
+                        'axis': {'range': [0, max_range], 'tickwidth': 1, 'tickcolor': '#555'},
+                        'bar': {'color': '#ff4b4b', 'thickness': 0.25},
+                        'bgcolor': 'rgba(0,0,0,0)',
+                        'borderwidth': 0,
+                        'steps': [
+                            {'range': [0, max_range*0.33], 'color': 'rgba(38,222,129,0.15)'},
+                            {'range': [max_range*0.33, max_range*0.66], 'color': 'rgba(255,159,67,0.15)'},
+                            {'range': [max_range*0.66, max_range], 'color': 'rgba(255,75,75,0.15)'},
+                        ],
+                        'threshold': {'line': {'color': '#ff0000', 'width': 4}, 'thickness': 0.8, 'value': 30}
                     }
                 ))
-                fig_gauge.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)')
+                fig_gauge.update_layout(**CHART_LAYOUT)
                 st.plotly_chart(fig_gauge, use_container_width=True)
 
         with col4:
             if not alerts_only.empty:
-                # Add cumulative count for an area chart
                 alerts_timeline = alerts_only.sort_values(by='time').copy()
                 alerts_timeline['Cumulative Alerts'] = range(1, len(alerts_timeline) + 1)
-                
-                fig4 = px.area(alerts_timeline, x='time', y='Cumulative Alerts',
-                               title='Cumulative Distraction Growth Over Time',
-                               template='plotly_dark',
-                               color_discrete_sequence=['#ff4444'])
-                fig4.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+                fig4 = go.Figure()
+                fig4.add_trace(go.Scatter(
+                    x=alerts_timeline['time'],
+                    y=alerts_timeline['Cumulative Alerts'],
+                    mode='lines+markers',
+                    name='Cumulative Alerts',
+                    fill='tozeroy',
+                    fillcolor='rgba(255,75,75,0.15)',
+                    line=dict(color='#ff4b4b', width=3, shape='spline'),
+                    marker=dict(size=8, color='#ff9f43', line=dict(width=2, color='white')),
+                    hovertemplate="Time: <b>%{x}</b><br>Total Alerts: <b>%{y}</b><extra></extra>"
+                ))
+                fig4.update_layout(
+                    title='📈 Cumulative Distraction Growth',
+                    yaxis=dict(gridcolor='rgba(255,255,255,0.06)'),
+                    xaxis=dict(gridcolor='rgba(255,255,255,0.04)'),
+                    **CHART_LAYOUT
+                )
                 st.plotly_chart(fig4, use_container_width=True)
-                
+
         st.divider()
         st.markdown("### 📊 Distraction Length Distribution")
         if not alerts_only.empty:
-            fig_hist = px.histogram(alerts_only, x='duration', nbins=10,
-                                    title='Frequency of Distraction Lengths',
-                                    template='plotly_dark',
-                                    color_discrete_sequence=['#00cc44'],
-                                    labels={'duration': 'Duration (Seconds)'},
-                                    text_auto=True)
-            fig_hist.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+            fig_hist = go.Figure(go.Histogram(
+                x=alerts_only['duration'],
+                nbinsx=10,
+                name='Distractions',
+                marker=dict(
+                    color=alerts_only['duration'],
+                    colorscale=[[0,'#26de81'],[0.5,'#ff9f43'],[1,'#ff4b4b']],
+                    line=dict(color='rgba(255,255,255,0.1)', width=1)
+                ),
+                hovertemplate="Duration: <b>%{x}s</b><br>Count: <b>%{y}</b><extra></extra>"
+            ))
+            fig_hist.update_layout(
+                title='📌 Frequency of Distraction Durations',
+                bargap=0.15,
+                yaxis=dict(gridcolor='rgba(255,255,255,0.06)', title='Count'),
+                xaxis=dict(title='Duration (Seconds)'),
+                **CHART_LAYOUT
+            )
             st.plotly_chart(fig_hist, use_container_width=True)
 
     else:
@@ -811,27 +865,58 @@ with tab_search:
             st.divider()
             
             if total_distractions > 0:
+                PERSON_LAYOUT = dict(
+                    paper_bgcolor='rgba(14,17,23,0.95)',
+                    plot_bgcolor='rgba(30,33,48,0.7)',
+                    font=dict(family='Inter, sans-serif', size=13, color='#c9d1d9'),
+                    title_font=dict(size=16, color='#ffffff'),
+                    margin=dict(l=20, r=20, t=50, b=30),
+                    hoverlabel=dict(bgcolor='#1e2130', font_size=13)
+                )
                 col1, col2 = st.columns(2)
-                
+
                 with col1:
-                    fig_dur = px.histogram(person_alerts, x='duration', nbins=5,
-                                           title=f'Duration of Distractions',
-                                           template='plotly_dark',
-                                           color_discrete_sequence=['#ffaa00'],
-                                           text_auto=True)
-                    fig_dur.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+                    fig_dur = go.Figure(go.Histogram(
+                        x=person_alerts['duration'],
+                        nbinsx=5,
+                        marker=dict(
+                            color=person_alerts['duration'],
+                            colorscale=[[0, '#f9ca24'], [0.5, '#f0932b'], [1, '#eb4d4b']],
+                            line=dict(color='rgba(255,255,255,0.1)', width=1)
+                        ),
+                        hovertemplate="Duration: <b>%{x}s</b><br>Count: <b>%{y}</b><extra></extra>"
+                    ))
+                    fig_dur.update_layout(
+                        title='⏱️ Distraction Durations',
+                        bargap=0.1,
+                        yaxis=dict(gridcolor='rgba(255,255,255,0.06)', title='Occurrences'),
+                        xaxis=dict(title='Duration (sec)'),
+                        **PERSON_LAYOUT
+                    )
                     st.plotly_chart(fig_dur, use_container_width=True)
-                    
+
                 with col2:
-                    person_alerts = person_alerts.sort_values(by='time').copy()
-                    person_alerts['Cumulative Alerts'] = range(1, len(person_alerts) + 1)
-                    fig_time = px.area(person_alerts, x='time', y='Cumulative Alerts',
-                                       title=f'Timeline of Violations',
-                                       template='plotly_dark',
-                                       color_discrete_sequence=['#ff4444'])
-                    fig_time.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+                    pa = person_alerts.sort_values(by='time').copy()
+                    pa['Cumulative Alerts'] = range(1, len(pa) + 1)
+                    fig_time = go.Figure()
+                    fig_time.add_trace(go.Scatter(
+                        x=pa['time'], y=pa['Cumulative Alerts'],
+                        mode='lines+markers',
+                        fill='tozeroy',
+                        fillcolor='rgba(255,75,75,0.12)',
+                        line=dict(color='#ff4b4b', width=3, shape='spline'),
+                        marker=dict(size=9, color='#f9ca24', symbol='circle',
+                                    line=dict(width=2, color='white')),
+                        hovertemplate="Time: <b>%{x}</b><br>Total: <b>%{y}</b><extra></extra>"
+                    ))
+                    fig_time.update_layout(
+                        title='📅 Violation Timeline',
+                        yaxis=dict(gridcolor='rgba(255,255,255,0.06)'),
+                        xaxis=dict(gridcolor='rgba(255,255,255,0.04)'),
+                        **PERSON_LAYOUT
+                    )
                     st.plotly_chart(fig_time, use_container_width=True)
-                    
+
                 st.markdown("#### 🖼️ Evidence (Recent Screenshots)")
                 if person_screenshots:
                     person_screenshots.sort(reverse=True)
