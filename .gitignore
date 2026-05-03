@@ -1,0 +1,13 @@
+__pycache__/
+venv/
+env/
+.env
+*.pt
+*.pkl
+dataset_faces/
+screenshots/
+*.jpg
+*.png
+*.jpeg
+*.mp4
+temp*.jpg

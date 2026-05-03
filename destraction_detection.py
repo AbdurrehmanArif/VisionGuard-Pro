@@ -17,6 +17,9 @@ model(dummy, verbose=False)
 PERSON = 0
 MOBILE = 67
 
+global_identity = "Unknown"
+last_ident_time = 0
+
 # ============================================
 # HELPER FUNCTIONS
 # ============================================
@@ -39,7 +42,7 @@ def draw_box(frame, box, label, color):
 # ============================================
 def detect_distraction(image, confidence_threshold):
     if image is None:
-        return None, "❌ Koi image nahi mili"
+        return None, "❌ NO IMAGE  FOUND"
 
     # PIL → numpy → resize (small = fast)
     frame = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
@@ -63,8 +66,30 @@ def detect_distraction(image, confidence_threshold):
         if cls == PERSON: persons.append({'box': bbox, 'conf': conf})
         elif cls == MOBILE: mobiles.append({'box': bbox, 'conf': conf})
 
+    global global_identity, last_ident_time
     for p in persons:
-        draw_box(frame, p['box'], f"P:{p['conf']:.2f}", (0, 255, 0))
+        bbox = p['box']
+        x1, y1, x2, y2 = map(int, bbox)
+        
+        import time
+        now_time = time.time()
+        if now_time - last_ident_time > 2.0:
+            person_crop = frame[max(0, y1):y2, max(0, x1):x2]
+            if person_crop.size > 0:
+                last_ident_time = now_time
+                def update_gradio_identity(crop):
+                    global global_identity
+                    try:
+                        from face_handler import get_person_identity
+                        ident = get_person_identity(crop)
+                        global_identity = ident
+                    except Exception:
+                        pass
+                import threading
+                threading.Thread(target=update_gradio_identity, args=(person_crop.copy(),)).start()
+
+        draw_box(frame, bbox, f"{global_identity} {p['conf']:.2f}", (0, 255, 0))
+        
     for m in mobiles:
         draw_box(frame, m['box'], f"M:{m['conf']:.2f}", (255, 165, 0))
 
@@ -114,7 +139,7 @@ with gr.Blocks(
     css="footer { display: none !important; }"
 ) as app:
 
-    gr.Markdown("# 🚨 Distraction Detection System")
+    gr.Markdown("#  Distraction Detection System")
 
     with gr.Tabs():
 

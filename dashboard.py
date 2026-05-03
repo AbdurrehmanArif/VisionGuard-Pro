@@ -15,6 +15,29 @@ from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
 from ultralytics import YOLO
 import threading
+import concurrent.futures
+from streamlit.runtime.scriptrunner import add_script_run_ctx
+
+
+
+# Global ThreadPool for Face Recognition to avoid spawning new threads and eating memory
+face_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+from pymongo import MongoClient
+
+# ============================================
+# MONGODB CONFIG
+# ============================================
+try:
+    mongo_client = MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=2000)
+    db = mongo_client["vision_guard"]
+    alerts_col = db["alerts"]
+    emails_col = db["emails"]
+    mongo_client.admin.command('ping')
+except Exception as e:
+    st.error(f"MongoDB connection failed: {e}")
+    alerts_col = None
+    emails_col = None
 
 # ============================================
 # PAGE CONFIG
@@ -122,14 +145,28 @@ st.markdown("""
 # ============================================
 # SESSION STATE INIT
 # ============================================
-if 'alert_log'       not in st.session_state: st.session_state.alert_log       = []
-if 'email_log'       not in st.session_state: st.session_state.email_log       = []
-if 'total_alerts'    not in st.session_state: st.session_state.total_alerts    = 0
-if 'total_emails'    not in st.session_state: st.session_state.total_emails    = 0
+if 'alert_log' not in st.session_state:
+    if alerts_col is not None:
+        st.session_state.alert_log = list(alerts_col.find({}, {"_id": 0}).sort("_id", 1))
+    else:
+        st.session_state.alert_log = []
+
+if 'email_log' not in st.session_state:
+    if emails_col is not None:
+        st.session_state.email_log = list(emails_col.find({}, {"_id": 0}).sort("_id", 1))
+    else:
+        st.session_state.email_log = []
+
+if 'total_alerts' not in st.session_state:
+    st.session_state.total_alerts = len(st.session_state.alert_log)
+if 'total_emails' not in st.session_state:
+    st.session_state.total_emails = len([e for e in st.session_state.email_log if '✅' in e.get('status', '')])
 if 'detection_start' not in st.session_state: st.session_state.detection_start = None
 if 'last_seen'       not in st.session_state: st.session_state.last_seen       = None
 if 'alert_triggered' not in st.session_state: st.session_state.alert_triggered = False
 if 'camera_active'   not in st.session_state: st.session_state.camera_active   = False
+if 'person_identities' not in st.session_state: st.session_state.person_identities = {} # track_id -> {name, last_check}
+
 
 os.makedirs('screenshots', exist_ok=True)
 
@@ -151,7 +188,7 @@ RIGHT_WRIST = 10
 # ============================================
 # SMTP EMAIL
 # ============================================
-def send_email(screenshot_path, elapsed, sender, password, receiver):
+def send_email(screenshot_path, elapsed, sender, password, receiver, person_name="Unknown"):
     try:
         msg            = MIMEMultipart()
         msg['From']    = sender
@@ -165,6 +202,7 @@ def send_email(screenshot_path, elapsed, sender, password, receiver):
 📅 Time     : {now_str}
 ⏱ Duration  : {int(elapsed)} seconds
 📱 Status   : Person using mobile detected
+👤 Person   : {person_name}
 
 Screenshot attached.
 -- Distraction Detection Dashboard
@@ -204,8 +242,12 @@ def draw_box(frame, box, label, color):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
 
 def run_detection(frame, conf_thresh, wrist_dist):
-    pose_res  = pose_model(frame, conf=conf_thresh)[0]
-    phone_res = phone_model(frame, conf=conf_thresh-0.1, iou=0.3)[0]
+    # Use track() instead of call() to get stable IDs
+    pose_results = pose_model.track(frame, conf=conf_thresh, persist=True, stream=True, imgsz=320, verbose=False)
+    pose_res = list(pose_results)[0]
+    
+    phone_res = list(phone_model(frame, conf=conf_thresh-0.1, iou=0.3, stream=True, imgsz=320, verbose=False))[0]
+
 
     phones, wrists = [], []
 
@@ -225,9 +267,60 @@ def run_detection(frame, conf_thresh, wrist_dist):
                     wrists.append((x, y))
                     cv2.circle(frame, (int(x), int(y)), 8, (0,255,255), -1)
 
-    for box in pose_res.boxes:
-        draw_box(frame, box.xyxy[0].tolist(),
-                 f"Person {float(box.conf):.2f}", (0,255,0))
+    if 'person_identities' not in st.session_state:
+        st.session_state.person_identities = {}
+
+
+    # Identify Persons & Match Identities
+    distracted_person_name = "Unknown"
+    
+    if pose_res.boxes is not None:
+        for box in pose_res.boxes:
+            bbox = box.xyxy[0].tolist()
+            x1, y1, x2, y2 = map(int, bbox)
+            
+            # Get track ID (default to 0 if no tracker yet)
+            track_id = int(box.id[0]) if box.id is not None else 0
+            
+            # Init state for this ID
+            if track_id not in st.session_state.person_identities:
+                st.session_state.person_identities[track_id] = {"name": "Unknown", "last_check": 0}
+            
+            p_state = st.session_state.person_identities[track_id]
+            now = time.time()
+            
+            # If name is Unknown, or it's been a while, try to identify
+            if p_state["name"] == "Unknown" and (now - p_state["last_check"] > 4.0):
+                person_crop = frame[max(0, y1):y2, max(0, x1):x2]
+                if person_crop.size > 0:
+                    st.session_state.person_identities[track_id]["last_check"] = now
+                    def update_identity_cb(crop, target_id):
+                        try:
+                            # Add context so it can update session_state safely
+                            from face_handler import get_person_identity
+                            ident = get_person_identity(crop)
+                            if ident != "Unknown":
+                                st.session_state.person_identities[target_id]["name"] = ident
+                        except Exception as e:
+                            print(f"DEBUG: Multi-Identity error for ID {target_id}: {e}")
+                    
+                    # Submit with context
+                    t = threading.Thread(target=update_identity_cb, args=(person_crop.copy(), track_id))
+                    add_script_run_ctx(t)
+                    t.start()
+
+            # Draw per-person label with Name and System ID
+            current_name = p_state["name"]
+            # Clean display: Name (ID: track_id)
+            display_label = f"👤 {current_name} (TRK:{track_id})"
+            draw_box(frame, bbox, display_label, (0,255,0))
+            
+            # Save the name of the last seen person to potentially blame for distraction
+            distracted_person_name = current_name
+
+
+
+    draw_actions = []
 
     mobile_in_use = False
     for phone in phones:
@@ -239,9 +332,26 @@ def run_detection(frame, conf_thresh, wrist_dist):
                          (int(wrist[0]), int(wrist[1])),
                          (int(pc[0]), int(pc[1])),
                          (0,0,255), 2)
+                draw_actions.append(('line', (int(wrist[0]), int(wrist[1])), (int(pc[0]), int(pc[1])), (0,0,255), 2))
                 draw_box(frame, phone['box'], "IN USE!", (0,0,255))
+                draw_actions.append(('box', phone['box'], "IN USE!", (0,0,255)))
 
-    return frame, mobile_in_use, len(phones), len(wrists)//2
+    # collect draw actions for things drawn earlier in the function
+    for p in phones:
+        draw_actions.append(('box', p['box'], f"Phone {p['conf']:.2f}", (255,165,0)))
+    for w in wrists:
+        draw_actions.append(('circle', (int(w[0]), int(w[1])), 8, (0,255,255), -1))
+    if pose_res.boxes is not None:
+        for box in pose_res.boxes:
+            bbox = box.xyxy[0].tolist()
+            track_id = int(box.id[0]) if box.id is not None else 0
+            if track_id in st.session_state.person_identities:
+                p_state = st.session_state.person_identities[track_id]
+                display_label = f"👤 {p_state['name']} (TRK:{track_id})"
+                draw_actions.append(('box', bbox, display_label, (0,255,0)))
+
+    return frame, mobile_in_use, len(phones), len(pose_res.boxes) if pose_res.boxes is not None else 0, distracted_person_name, draw_actions
+
 
 # ============================================
 # SIDEBAR
@@ -258,10 +368,15 @@ with st.sidebar:
     st.divider()
 
     st.subheader("📧 Email Config")
+    try:
+        from distraction_email import EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECEIVER
+    except ImportError:
+        EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECEIVER = "", "", ""
+
     email_enabled  = st.toggle("Enable Email Alerts", value=False)
-    email_sender   = st.text_input("Sender Email",   placeholder="your@gmail.com")
-    email_password = st.text_input("App Password",   type="password")
-    email_receiver = st.text_input("Receiver Email", placeholder="receiver@gmail.com")
+    email_sender   = st.text_input("Sender Email",   value=EMAIL_SENDER, placeholder="your@gmail.com")
+    email_password = st.text_input("App Password",   value=EMAIL_PASSWORD, type="password")
+    email_receiver = st.text_input("Receiver Email", value=EMAIL_RECEIVER, placeholder="receiver@gmail.com")
 
     if st.button("🧪 Test Email"):
         if email_sender and email_password and email_receiver:
@@ -274,7 +389,7 @@ with st.sidebar:
                 )
             st.success("✅ Sent!") if ok else st.error(f"❌ {msg}")
         else:
-            st.warning("Email details fill karo!")
+            st.warning("Email details please!")
 
     st.divider()
 
@@ -283,6 +398,10 @@ with st.sidebar:
         st.session_state.email_log    = []
         st.session_state.total_alerts = 0
         st.session_state.total_emails = 0
+        if alerts_col is not None:
+            alerts_col.delete_many({})
+        if emails_col is not None:
+            emails_col.delete_many({})
         st.rerun()
 
 # ============================================
@@ -293,11 +412,12 @@ st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 st.divider()
 
 # ---- TABS ----
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📹 Live Detection",
     "📊 Statistics",
     "🖼️ Alert History",
-    "📧 Email Logs"
+    "📧 Email Logs",
+    "👤 Face Recognition"
 ])
 
 # ============================================
@@ -312,8 +432,8 @@ with tab1:
                                    help="0=webcam, ya CCTV URL")
 
         c1, c2 = st.columns(2)
-        start_btn = c1.button("▶ Start Detection", type="primary",  use_container_width=True)
-        stop_btn  = c2.button("⏹ Stop",            type="secondary", use_container_width=True)
+        start_btn = c1.button("▶ Start Detection", type="primary",  width="stretch")
+        stop_btn  = c2.button("⏹ Stop",            type="secondary", width="stretch")
 
         frame_placeholder  = st.empty()
         status_placeholder = st.empty()
@@ -336,32 +456,64 @@ with tab1:
         st.session_state.detection_start = None
         st.session_state.last_seen       = None
         st.session_state.alert_triggered = False
+        st.session_state.person_identities = {} # Reset IDs on start
+
 
     if stop_btn:
         st.session_state.camera_active = False
 
     if st.session_state.camera_active:
         src = int(cam_source) if cam_source.isdigit() else cam_source
-        cap = cv2.VideoCapture(src)
+        
+        # Windows DirectShow backend handles webcam buffering correctly without lag
+        if isinstance(src, int) and os.name == 'nt':
+            cap = cv2.VideoCapture(src, cv2.CAP_DSHOW)
+        else:
+            cap = cv2.VideoCapture(src)
+            
         cap.set(cv2.CAP_PROP_FPS,          30)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
 
+        frame_idx = 0
+        mobile_in_use = False
+        phone_count = 0
+        person_count = 0
+        detected_name = "Unknown"
+        
         fps_counter = 0
+        fps_time = time.time()
         fps_display = 0
-        fps_time    = time.time()
+        
+        last_draw_actions = []
 
         while st.session_state.camera_active:
             ret, frame = cap.read()
             if not ret:
-                st.error("Camera nahi mila!")
+                st.error("Camera not open!")
                 break
 
             frame = cv2.resize(frame, (640, 480))
-            frame, mobile_in_use, phone_count, person_count = run_detection(
-                frame, conf_thresh, wrist_dist
-            )
+            
+            # PERFORMANCE FIX: Only run heavy AI every 5 frames to prevent processing lag
+            if frame_idx % 5 == 0:
+                frame, mobile_in_use, phone_count, person_count, detected_name, last_draw_actions = run_detection(
+                    frame, conf_thresh, wrist_dist
+                )
+            else:
+                # On intermediate frames, draw the cached boxes to avoid flickering
+                for action in last_draw_actions:
+                    if action[0] == 'box':
+                        draw_box(frame, action[1], action[2], action[3])
+                    elif action[0] == 'circle':
+                        cv2.circle(frame, action[1], action[2], action[3], action[4])
+                    elif action[0] == 'line':
+                        cv2.line(frame, action[1], action[2], action[3], action[4])
+                
+            frame_idx += 1
+
+
 
             now = time.time()
 
@@ -393,25 +545,39 @@ with tab1:
                     st.session_state.alert_triggered = True
                     st.session_state.total_alerts   += 1
 
-                    filename = f"screenshots/alert_{int(now)}.jpg"
+                    person_name = detected_name
+                    # Clean filename for insurance
+                    safe_name = person_name.replace(" ", "_").replace("/", "_")
+                    filename = f"screenshots/alert_{safe_name}_{int(now)}.jpg"
                     cv2.imwrite(filename, frame)
 
-                    st.session_state.alert_log.append({
+
+                    alert_doc = {
                         'time':     datetime.now().strftime("%H:%M:%S"),
-                        'event':    '🚨 ALERT TRIGGERED',
+                        'event':    f'🚨 ALERT: {person_name}',
                         'duration': int(elapsed),
+                        'person':   person_name,
                         'file':     filename
-                    })
+                    }
+                    st.session_state.alert_log.append(alert_doc)
+                    if alerts_col is not None:
+                        alerts_col.insert_one(alert_doc.copy())
+
 
                     if email_enabled and email_sender and email_password and email_receiver:
                         ok, msg = send_email(filename, elapsed,
-                                             email_sender, email_password, email_receiver)
-                        st.session_state.email_log.append({
+                                             email_sender, email_password, email_receiver,
+                                             person_name)
+
+                        email_doc = {
                             'time':   datetime.now().strftime("%H:%M:%S"),
                             'to':     email_receiver,
                             'status': '✅ Sent' if ok else f'❌ {msg}',
                             'file':   os.path.basename(filename)
-                        })
+                        }
+                        st.session_state.email_log.append(email_doc)
+                        if emails_col is not None:
+                            emails_col.insert_one(email_doc.copy())
                         if ok: st.session_state.total_emails += 1
 
                     st.session_state.detection_start = None
@@ -462,22 +628,24 @@ with tab1:
                         (frame.shape[1]-120, 38),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,0), 2)
 
-            # Show frame
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
+            # Update UI elements only every 2 frames to reduce Streamlit WebSocket lag
+            if frame_idx % 2 == 0:
+                # Show frame
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame_placeholder.image(frame_rgb, channels="RGB", width="stretch")
 
-            # Live stats
-            m1.markdown(f'<div class="metric-card"><div class="metric-value">{person_count}</div><div class="metric-label">👤 Persons</div></div>', unsafe_allow_html=True)
-            m2.markdown(f'<div class="metric-card"><div class="metric-value">{phone_count}</div><div class="metric-label">📱 Phones</div></div>', unsafe_allow_html=True)
-            m3.markdown(f'<div class="metric-card"><div class="metric-value">{st.session_state.total_alerts}</div><div class="metric-label">🚨 Total Alerts</div></div>', unsafe_allow_html=True)
-            m4.markdown(f'<div class="metric-card"><div class="metric-value">{st.session_state.total_emails}</div><div class="metric-label">📧 Emails Sent</div></div>', unsafe_allow_html=True)
+                # Live stats
+                m1.markdown(f'<div class="metric-card"><div class="metric-value">{person_count}</div><div class="metric-label">👤 Persons</div></div>', unsafe_allow_html=True)
+                m2.markdown(f'<div class="metric-card"><div class="metric-value">{phone_count}</div><div class="metric-label">📱 Phones</div></div>', unsafe_allow_html=True)
+                m3.markdown(f'<div class="metric-card"><div class="metric-value">{st.session_state.total_alerts}</div><div class="metric-label">🚨 Total Alerts</div></div>', unsafe_allow_html=True)
+                m4.markdown(f'<div class="metric-card"><div class="metric-value">{st.session_state.total_emails}</div><div class="metric-label">📧 Emails Sent</div></div>', unsafe_allow_html=True)
 
-            # Live log
-            if st.session_state.alert_log:
-                log_html = ""
-                for entry in st.session_state.alert_log[-5:][::-1]:
-                    log_html += f'<div class="log-entry">⏰ {entry["time"]} — {entry["event"]}</div>'
-                log_placeholder.markdown(log_html, unsafe_allow_html=True)
+                # Live log
+                if st.session_state.alert_log:
+                    log_html = ""
+                    for entry in st.session_state.alert_log[-5:][::-1]:
+                        log_html += f'<div class="log-entry">⏰ {entry["time"]} — {entry["event"]}</div>'
+                    log_placeholder.markdown(log_html, unsafe_allow_html=True)
 
         cap.release()
 
@@ -508,7 +676,7 @@ with tab2:
             fig.update_layout(paper_bgcolor='rgba(0,0,0,0)',
                               plot_bgcolor='rgba(0,0,0,0)',
                               font_color='white')
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
         with col2:
             alerts_only = df[df['event'] == '🚨 ALERT TRIGGERED']
@@ -520,9 +688,9 @@ with tab2:
                 fig2.update_layout(paper_bgcolor='rgba(0,0,0,0)',
                                    plot_bgcolor='rgba(0,0,0,0)',
                                    font_color='white')
-                st.plotly_chart(fig2, use_container_width=True)
+                st.plotly_chart(fig2, width="stretch")
     else:
-        st.info("Abhi koi data nahi — detection start karo!")
+        st.info("NO DATA FOUND — detection start !")
 
 # ============================================
 # TAB 3 — ALERT HISTORY
@@ -545,7 +713,7 @@ with tab3:
                     fpath = os.path.join('screenshots', fname)
                     with col:
                         img = Image.open(fpath)
-                        st.image(img, caption=fname, use_container_width=True)
+                        st.image(img, caption=fname, width="stretch")
                         ts = fname.replace('alert_','').replace('.jpg','')
                         try:
                             dt = datetime.fromtimestamp(int(ts))
@@ -558,10 +726,10 @@ with tab3:
                                 f.read(),
                                 fname,
                                 "image/jpeg",
-                                use_container_width=True
+                                width="stretch"
                             )
     else:
-        st.info("Koi screenshot nahi — detection shuru karo!")
+        st.info("NO screenshort here — know detection open!")
 
 # ============================================
 # TAB 4 — EMAIL LOGS
@@ -573,7 +741,7 @@ with tab4:
         df_email = pd.DataFrame(st.session_state.email_log)
         st.dataframe(
             df_email,
-            use_container_width=True,
+            width="stretch",
             column_config={
                 'time':   'Time',
                 'to':     'Sent To',
@@ -589,4 +757,44 @@ with tab4:
         c1.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#00cc44">{sent}</div><div class="metric-label">✅ Sent</div></div>', unsafe_allow_html=True)
         c2.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#ff4444">{failed}</div><div class="metric-label">❌ Failed</div></div>', unsafe_allow_html=True)
     else:
-        st.info("Koi email log nahi abhi!")
+        st.info("NO EMAIL FOUND !")
+
+# ============================================
+# TAB 5 — FACE RECOGNITION
+# ============================================
+with tab5:
+    st.subheader("👤 Face Recognition System")
+    face_mode = st.radio("Select Mode:", ["Register New Person", "Live Detection"])
+    
+    if face_mode == "Register New Person":
+        st.write("Register yourself by looking at the camera.")
+        reg_name = st.text_input("Name (e.g. John)")
+        reg_id = st.text_input("Employee/Person ID (e.g. 101)")
+        cam_reg = st.text_input("Camera Source", value="0", key="cam_reg")
+        if st.button("Start Local Registration"):
+            if reg_name and reg_id:
+                from face_handler import register_person
+                src = int(cam_reg) if cam_reg.isdigit() else cam_reg
+                register_person(reg_name, reg_id, src)
+            else:
+                st.warning("Please enter Name and ID to proceed.")
+                
+    elif face_mode == "Live Detection":
+        st.write("Live detection of registered persons. Emails sent upon recognition.")
+        cam_live = st.text_input("Camera Source", value="0", key="cam_live")
+        c1, c2 = st.columns(2)
+        start_face = c1.button("▶ Start Face Detection")
+        stop_face = c2.button("⏹ Stop Face Detection")
+        
+        if 'camera_active_face' not in st.session_state:
+            st.session_state.camera_active_face = False
+            
+        if start_face:
+            st.session_state.camera_active_face = True
+        if stop_face:
+            st.session_state.camera_active_face = False
+            
+        if st.session_state.camera_active_face:
+            from face_handler import run_live_face_recognition
+            src = int(cam_live) if cam_live.isdigit() else cam_live
+            run_live_face_recognition(src, email_enabled, email_sender, email_password, email_receiver)

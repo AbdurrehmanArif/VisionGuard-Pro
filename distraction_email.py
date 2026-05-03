@@ -40,6 +40,9 @@ detection_start = None
 last_seen       = None
 alert_triggered = False
 
+global_identity = "Unknown"
+last_ident_time = 0
+
 os.makedirs('screenshots', exist_ok=True)
 
 # ============================================
@@ -54,6 +57,7 @@ def send_email(screenshot_path, elapsed_time):
 
         # Email body
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        global global_identity
         body = f"""
 🚨 DISTRACTION ALERT!
 
@@ -61,6 +65,7 @@ def send_email(screenshot_path, elapsed_time):
 📅 Time     : {now_str}
 ⏱ Duration  : {int(elapsed_time)} seconds
 📱 Status   : Person using mobile detected
+👤 Person   : {global_identity if 'global_identity' in globals() else 'Unknown'}
 ━━━━━━━━━━━━━━━━━━━━━━
 
 Screenshot attached.
@@ -135,9 +140,29 @@ def detect(frame):
                     cv2.circle(frame, (int(x), int(y)), 8, (0,255,255), -1)
 
     # Person boxes
+    global global_identity, last_ident_time
     for box in pose_results.boxes:
-        draw_box(frame, box.xyxy[0].tolist(),
-                 f"Person {float(box.conf):.2f}", (0, 255, 0))
+        bbox = box.xyxy[0].tolist()
+        x1, y1, x2, y2 = map(int, bbox)
+        
+        # Threaded Face Recognition
+        now_time = time.time()
+        if now_time - last_ident_time > 2.0:
+            person_crop = frame[max(0, y1):y2, max(0, x1):x2]
+            if person_crop.size > 0:
+                last_ident_time = now_time
+                def update_email_identity(crop):
+                    global global_identity
+                    try:
+                        from face_handler import get_person_identity
+                        ident = get_person_identity(crop)
+                        global_identity = ident
+                    except Exception:
+                        pass
+                import threading
+                threading.Thread(target=update_email_identity, args=(person_crop.copy(),)).start()
+                
+        draw_box(frame, bbox, f"{global_identity} {float(box.conf):.2f}", (0, 255, 0))
 
     # Phone + Wrist check
     mobile_in_use = False
@@ -208,44 +233,45 @@ def detect(frame):
 
     return frame
 
-# ============================================
-# CAMERA
-# ============================================
-cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FPS,          TARGET_FPS)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_WIDTH)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
+if __name__ == "__main__":
+    # ============================================
+    # CAMERA
+    # ============================================
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FPS,          TARGET_FPS)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
 
-print(f"✅ Camera FPS: {cap.get(cv2.CAP_PROP_FPS)}")
-print(f"📧 Email alerts: {EMAIL_RECEIVER}")
+    print(f"✅ Camera FPS: {cap.get(cv2.CAP_PROP_FPS)}")
+    print(f"📧 Email alerts: {EMAIL_RECEIVER}")
 
-fps_counter = 0
-fps_display = 0
-fps_time    = time.time()
+    fps_counter = 0
+    fps_display = 0
+    fps_time    = time.time()
 
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
 
-    frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
-    frame = detect(frame)
+        frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
+        frame = detect(frame)
 
-    fps_counter += 1
-    if time.time() - fps_time >= 1.0:
-        fps_display = fps_counter
-        fps_counter = 0
-        fps_time    = time.time()
+        fps_counter += 1
+        if time.time() - fps_time >= 1.0:
+            fps_display = fps_counter
+            fps_counter = 0
+            fps_time    = time.time()
 
-    cv2.putText(frame, f"FPS: {fps_display}",
-                (frame.shape[1]-120, 38),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,0), 2)
+        cv2.putText(frame, f"FPS: {fps_display}",
+                    (frame.shape[1]-120, 38),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,0), 2)
 
-    cv2.imshow("Distraction Detection", frame)
+        cv2.imshow("Distraction Detection", frame)
 
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
-cap.release()
-cv2.destroyAllWindows()
+    cap.release()
+    cv2.destroyAllWindows()
