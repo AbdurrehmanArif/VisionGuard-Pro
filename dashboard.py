@@ -412,9 +412,10 @@ st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 st.divider()
 
 # ---- TABS ----
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab_search, tab3, tab4, tab5 = st.tabs([
     "📹 Live Detection",
     "📊 Statistics",
+    "🔍 Search Person",
     "🖼️ Alert History",
     "📧 Email Logs",
     "👤 Face Recognition"
@@ -772,6 +773,77 @@ with tab2:
 
     else:
         st.info("NO DATA FOUND — Start the detection to collect data!")
+
+# ============================================
+# TAB SEARCH — INDIVIDUAL ANALYSIS
+# ============================================
+with tab_search:
+    st.subheader("🔍 Individual Person Analysis")
+    
+    registered_people = []
+    if os.path.exists("dataset_faces"):
+        registered_people = [d for d in os.listdir("dataset_faces") if os.path.isdir(os.path.join("dataset_faces", d))]
+    
+    if not registered_people:
+        st.warning("No persons registered in the database yet.")
+    else:
+        search_query = st.selectbox("Select or Search for a Person:", ["-- Select Person --"] + registered_people)
+        
+        if search_query != "-- Select Person --":
+            st.markdown(f"### Analysis for: **{search_query.replace('_', ' - ')}**")
+            
+            df = pd.DataFrame(st.session_state.alert_log) if st.session_state.alert_log else pd.DataFrame()
+            person_alerts = pd.DataFrame()
+            if not df.empty and 'person' in df.columns:
+                person_alerts = df[(df['event'].str.startswith('🚨 ALERT')) & (df['person'] == search_query)]
+            
+            c1, c2, c3 = st.columns(3)
+            total_distractions = len(person_alerts)
+            
+            person_screenshots = [f for f in os.listdir('screenshots') if search_query in f and f.endswith('.jpg')] if os.path.exists('screenshots') else []
+            
+            status = "🚨 Frequent Violator" if total_distractions > 3 else ("⚠️ Warning" if total_distractions > 0 else "✅ Clean Record")
+            
+            c1.markdown(f'<div class="metric-card"><div class="metric-value">{total_distractions}</div><div class="metric-label">Total Alerts</div></div>', unsafe_allow_html=True)
+            c2.markdown(f'<div class="metric-card"><div class="metric-value">{len(person_screenshots)}</div><div class="metric-label">Screenshots Captured</div></div>', unsafe_allow_html=True)
+            c3.markdown(f'<div class="metric-card"><div class="metric-value" style="font-size:24px; padding-top:10px;">{status}</div><div class="metric-label">Overall Status</div></div>', unsafe_allow_html=True)
+            
+            st.divider()
+            
+            if total_distractions > 0:
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    fig_dur = px.histogram(person_alerts, x='duration', nbins=5,
+                                           title=f'Duration of Distractions',
+                                           template='plotly_dark',
+                                           color_discrete_sequence=['#ffaa00'],
+                                           text_auto=True)
+                    fig_dur.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+                    st.plotly_chart(fig_dur, use_container_width=True)
+                    
+                with col2:
+                    person_alerts = person_alerts.sort_values(by='time').copy()
+                    person_alerts['Cumulative Alerts'] = range(1, len(person_alerts) + 1)
+                    fig_time = px.area(person_alerts, x='time', y='Cumulative Alerts',
+                                       title=f'Timeline of Violations',
+                                       template='plotly_dark',
+                                       color_discrete_sequence=['#ff4444'])
+                    fig_time.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+                    st.plotly_chart(fig_time, use_container_width=True)
+                    
+                st.markdown("#### 🖼️ Evidence (Recent Screenshots)")
+                if person_screenshots:
+                    person_screenshots.sort(reverse=True)
+                    cols = st.columns(min(3, len(person_screenshots)))
+                    for j, col in enumerate(cols):
+                        if j < len(person_screenshots):
+                            fname = person_screenshots[j]
+                            fpath = os.path.join('screenshots', fname)
+                            with col:
+                                st.image(Image.open(fpath), caption=fname, use_container_width=True)
+            else:
+                st.success(f"🎉 **{search_query.replace('_', ' ')}** has no recorded distractions! Clean record.")
 
 # ============================================
 # TAB 3 — ALERT HISTORY
