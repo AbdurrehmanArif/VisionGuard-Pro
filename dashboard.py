@@ -665,32 +665,68 @@ with tab2:
 
     if st.session_state.alert_log:
         df = pd.DataFrame(st.session_state.alert_log)
+        alerts_only = df[df['event'].str.startswith('🚨 ALERT')]
 
+        st.markdown("### 📈 Top-Level Analytics")
         col1, col2 = st.columns(2)
 
         with col1:
             events = df['event'].value_counts().reset_index()
             fig = px.pie(events, values='count', names='event',
                          title='Event Distribution',
+                         hole=0.4,
                          color_discrete_sequence=px.colors.sequential.RdBu)
             fig.update_layout(paper_bgcolor='rgba(0,0,0,0)',
                               plot_bgcolor='rgba(0,0,0,0)',
                               font_color='white')
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, use_container_width=True)
 
         with col2:
-            alerts_only = df[df['event'] == '🚨 ALERT TRIGGERED']
+            if not alerts_only.empty and 'person' in df.columns:
+                person_counts = alerts_only['person'].value_counts().reset_index()
+                person_counts.columns = ['Person', 'Distraction Count']
+                fig3 = px.bar(person_counts, x='Person', y='Distraction Count',
+                              title='Most Distracted Individuals',
+                              color='Distraction Count',
+                              color_continuous_scale='Magma')
+                fig3.update_layout(paper_bgcolor='rgba(0,0,0,0)',
+                                   plot_bgcolor='rgba(0,0,0,0)',
+                                   font_color='white')
+                st.plotly_chart(fig3, use_container_width=True)
+            else:
+                st.info("No person distraction data available yet.")
+
+        st.divider()
+        st.markdown("### ⏱️ Time-Based Analytics")
+        col3, col4 = st.columns(2)
+
+        with col3:
             if not alerts_only.empty:
                 fig2 = px.bar(alerts_only, x='time', y='duration',
-                              title='Alert Duration (seconds)',
+                              title='Alert Durations (seconds)',
                               color='duration',
                               color_continuous_scale='Reds')
                 fig2.update_layout(paper_bgcolor='rgba(0,0,0,0)',
                                    plot_bgcolor='rgba(0,0,0,0)',
                                    font_color='white')
-                st.plotly_chart(fig2, width="stretch")
+                st.plotly_chart(fig2, use_container_width=True)
+
+        with col4:
+            if not alerts_only.empty:
+                # Add a dummy count column to visualize frequency
+                alerts_timeline = alerts_only.copy()
+                alerts_timeline['Count'] = 1
+                fig4 = px.line(alerts_timeline, x='time', y='Count', markers=True,
+                               title='Timeline of Distraction Alerts',
+                               line_shape='spline')
+                fig4.update_traces(line_color='#ff4444', marker=dict(size=10, color='yellow'))
+                fig4.update_layout(paper_bgcolor='rgba(0,0,0,0)',
+                                   plot_bgcolor='rgba(0,0,0,0)',
+                                   font_color='white',
+                                   yaxis_title="Alert Triggered")
+                st.plotly_chart(fig4, use_container_width=True)
     else:
-        st.info("NO DATA FOUND — detection start !")
+        st.info("NO DATA FOUND — Start the detection to collect data!")
 
 # ============================================
 # TAB 3 — ALERT HISTORY
