@@ -825,6 +825,113 @@ with tab2:
             )
             st.plotly_chart(fig_hist, use_container_width=True)
 
+        st.divider()
+        st.markdown("### 🔬 Deep-Dive Analysis")
+        col5, col6 = st.columns(2)
+
+        with col5:
+            # Scatter plot: each alert as a dot — time vs duration
+            if not alerts_only.empty:
+                scatter_df = alerts_only.copy().reset_index(drop=True)
+                scatter_df['Alert #'] = range(1, len(scatter_df) + 1)
+                person_col = scatter_df['person'] if 'person' in scatter_df.columns else ['Unknown'] * len(scatter_df)
+                fig_scatter = go.Figure(go.Scatter(
+                    x=scatter_df['Alert #'],
+                    y=scatter_df['duration'],
+                    mode='markers+text',
+                    text=person_col,
+                    textposition='top center',
+                    textfont=dict(size=9, color='rgba(200,200,200,0.7)'),
+                    marker=dict(
+                        size=scatter_df['duration'].apply(lambda d: max(8, min(d * 0.8, 30))),
+                        color=scatter_df['duration'],
+                        colorscale=[[0,'#26de81'],[0.5,'#ff9f43'],[1,'#ff4b4b']],
+                        showscale=True,
+                        colorbar=dict(title='Sec', thickness=12),
+                        line=dict(color='white', width=1)
+                    ),
+                    hovertemplate="Alert #<b>%{x}</b><br>Duration: <b>%{y}s</b><br>Person: <b>%{text}</b><extra></extra>"
+                ))
+                fig_scatter.update_layout(
+                    title='🔴 Alert Severity Scatter (Size = Duration)',
+                    xaxis=dict(title='Alert Number', gridcolor='rgba(255,255,255,0.05)'),
+                    yaxis=dict(title='Duration (sec)', gridcolor='rgba(255,255,255,0.06)'),
+                    **CHART_LAYOUT
+                )
+                st.plotly_chart(fig_scatter, use_container_width=True)
+
+        with col6:
+            # Horizontal bar — per-person total distraction time (not just count)
+            if not alerts_only.empty and 'person' in alerts_only.columns:
+                time_df = alerts_only.groupby('person')['duration'].sum().reset_index()
+                time_df.columns = ['Person', 'Total Distraction Time (sec)']
+                time_df = time_df.sort_values('Total Distraction Time (sec)', ascending=True)
+                fig_hbar = go.Figure(go.Bar(
+                    x=time_df['Total Distraction Time (sec)'],
+                    y=time_df['Person'],
+                    orientation='h',
+                    text=time_df['Total Distraction Time (sec)'].apply(lambda v: f"{v:.0f}s"),
+                    textposition='outside',
+                    marker=dict(
+                        color=time_df['Total Distraction Time (sec)'],
+                        colorscale=[[0,'#00e5ff'],[0.5,'#a55eea'],[1,'#ff4b4b']],
+                        line=dict(color='rgba(255,255,255,0.1)', width=1)
+                    ),
+                    hovertemplate="<b>%{y}</b><br>Total Time: <b>%{x}s</b><extra></extra>"
+                ))
+                fig_hbar.update_layout(
+                    title='⏱️ Total Distraction Time per Person',
+                    xaxis=dict(title='Seconds', gridcolor='rgba(255,255,255,0.05)'),
+                    yaxis=dict(gridcolor='rgba(0,0,0,0)'),
+                    **CHART_LAYOUT
+                )
+                st.plotly_chart(fig_hbar, use_container_width=True)
+
+        st.divider()
+        col7, col8 = st.columns(2)
+
+        with col7:
+            # Box Plot — Duration spread per person
+            if not alerts_only.empty and 'person' in alerts_only.columns:
+                fig_box = go.Figure()
+                for person in alerts_only['person'].unique():
+                    p_data = alerts_only[alerts_only['person'] == person]['duration']
+                    fig_box.add_trace(go.Box(
+                        y=p_data,
+                        name=person,
+                        boxpoints='all',
+                        jitter=0.4,
+                        pointpos=-1.6,
+                        marker=dict(size=6, opacity=0.7),
+                        line=dict(width=2)
+                    ))
+                fig_box.update_layout(
+                    title='📦 Duration Spread per Person (Box Plot)',
+                    yaxis=dict(title='Duration (sec)', gridcolor='rgba(255,255,255,0.06)'),
+                    showlegend=False,
+                    **CHART_LAYOUT
+                )
+                st.plotly_chart(fig_box, use_container_width=True)
+
+        with col8:
+            # Sunburst — Person → Event breakdown
+            if not alerts_only.empty and 'person' in alerts_only.columns:
+                sunburst_df = alerts_only.groupby(['person','event']).size().reset_index(name='count')
+                fig_sun = px.sunburst(
+                    sunburst_df,
+                    path=['person','event'],
+                    values='count',
+                    title='🌐 Person → Event Sunburst',
+                    color='count',
+                    color_continuous_scale=[[0,'#1e2130'],[0.4,'#a55eea'],[1,'#ff4b4b']]
+                )
+                fig_sun.update_traces(
+                    textfont_size=12,
+                    marker=dict(line=dict(color='#0e1117', width=2))
+                )
+                fig_sun.update_layout(**CHART_LAYOUT)
+                st.plotly_chart(fig_sun, use_container_width=True)
+
     else:
         st.info("NO DATA FOUND — Start the detection to collect data!")
 
