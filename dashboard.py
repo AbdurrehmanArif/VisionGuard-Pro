@@ -663,9 +663,36 @@ with tab2:
 
     st.divider()
 
-    if st.session_state.alert_log:
-        df = pd.DataFrame(st.session_state.alert_log)
-        alerts_only = df[df['event'].str.startswith('🚨 ALERT')]
+    df = pd.DataFrame(st.session_state.alert_log) if st.session_state.alert_log else pd.DataFrame()
+    alerts_only = df[df['event'].str.startswith('🚨 ALERT')] if not df.empty else pd.DataFrame()
+
+    st.markdown("### 📇 Registered Persons Directory")
+    registered_people = []
+    if os.path.exists("dataset_faces"):
+        registered_people = [d for d in os.listdir("dataset_faces") if os.path.isdir(os.path.join("dataset_faces", d))]
+    
+    db_records = []
+    for person in registered_people:
+        alerts = 0
+        if not alerts_only.empty and 'person' in alerts_only.columns:
+            alerts = len(alerts_only[alerts_only['person'] == person])
+        
+        status = "🚨 Frequent Violator" if alerts > 3 else ("⚠️ Warning" if alerts > 0 else "✅ Clean Record")
+        db_records.append({
+            "Registered Name (Emp ID)": person.replace("_", " - "),
+            "Total Distractions": alerts,
+            "Status": status
+        })
+        
+    if db_records:
+        db_df = pd.DataFrame(db_records)
+        st.dataframe(db_df.sort_values(by="Total Distractions", ascending=False), use_container_width=True, hide_index=True)
+    else:
+        st.info("No persons registered in the database yet.")
+
+    st.divider()
+
+    if not df.empty:
 
         st.markdown("### 📈 Top-Level Analytics")
         col1, col2 = st.columns(2)
