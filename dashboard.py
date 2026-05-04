@@ -637,8 +637,8 @@ with tab1:
                 m1.markdown(f'<div class="metric-card"><div class="metric-value">{person_count}</div><div class="metric-label">👤 Persons</div></div>', unsafe_allow_html=True)
                 m2.markdown(f'<div class="metric-card"><div class="metric-value">{phone_count}</div><div class="metric-label">📱 Phones</div></div>', unsafe_allow_html=True)
                 
-                db_total_alerts = alerts_col.count_documents({}) if alerts_col else 0
-                db_total_emails = emails_col.count_documents({"status": {"$regex": "✅"}}) if emails_col else 0
+                db_total_alerts = alerts_col.count_documents({}) if alerts_col is not None else 0
+                db_total_emails = emails_col.count_documents({"status": {"$regex": "✅"}}) if emails_col is not None else 0
                 
                 m3.markdown(f'<div class="metric-card"><div class="metric-value">{db_total_alerts}</div><div class="metric-label">🚨 Total Alerts</div></div>', unsafe_allow_html=True)
                 m4.markdown(f'<div class="metric-card"><div class="metric-value">{db_total_emails}</div><div class="metric-label">📧 Emails Sent</div></div>', unsafe_allow_html=True)
@@ -660,8 +660,8 @@ with tab2:
     st.subheader("📊 Detection Statistics")
 
     # Sidebar Overview (Direct from MongoDB)
-    total_alerts_db = alerts_col.count_documents({}) if alerts_col else 0
-    total_emails_db = emails_col.count_documents({"status": {"$regex": "✅"}}) if emails_col else 0
+    total_alerts_db = alerts_col.count_documents({}) if alerts_col is not None else 0
+    total_emails_db = emails_col.count_documents({"status": {"$regex": "✅"}}) if emails_col is not None else 0
 
     c1, c2, c3, c4 = st.columns(4)
     c1.markdown(f'<div class="metric-card"><div class="metric-value">{total_alerts_db}</div><div class="metric-label">🚨 Total Alerts</div></div>', unsafe_allow_html=True)
