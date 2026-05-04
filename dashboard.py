@@ -1009,3 +1009,29 @@ with tab5:
             from face_handler import run_live_face_recognition
             src = int(cam_live) if cam_live.isdigit() else cam_live
             run_live_face_recognition(src, email_enabled, email_sender, email_password, email_receiver)
+
+    st.divider()
+    st.subheader("📇 Registered Users Directory (MongoDB)")
+    if users_col is not None:
+        if st.button("🔄 Refresh User List"):
+            st.rerun()
+            
+        users_data = list(users_col.find({}, {"_id": 0}))
+        if users_data:
+            df_users = pd.DataFrame(users_data)
+            st.dataframe(
+                df_users,
+                use_container_width=True,
+                column_config={
+                    "name": "Name",
+                    "emp_id": "Employee ID",
+                    "registered_at": "Registration Date",
+                    "total_images": "Samples Captured",
+                    "status": "Status"
+                }
+            )
+            st.info(f"Total Registered Persons: **{len(users_data)}**")
+        else:
+            st.info("No users found in MongoDB. Register someone above!")
+    else:
+        st.error("MongoDB not connected. Cannot fetch user directory.")
