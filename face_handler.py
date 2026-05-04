@@ -35,7 +35,7 @@ This person was just detected by the system.
     except Exception as e:
         print("Email error:", str(e))
 
-def register_person(name, emp_id, cam_src=0):
+def register_person(name, emp_id, cam_src=0, users_col=None):
     # Try with DirectShow on Windows if default fails or takes too long
     cap = cv2.VideoCapture(cam_src)
     if not cap.isOpened() and isinstance(cam_src, int):
@@ -104,6 +104,24 @@ def register_person(name, emp_id, cam_src=0):
          status.warning(f"⚠️ Video played, but 0 faces were detected. Please ensure your face is well lit and clearly visible.")
     else:
          status.success(f"✅ Registration complete for {name} ({emp_id})! {count} face images saved in 10 seconds.")
+         
+         # Save to MongoDB
+         if users_col is not None:
+             from datetime import datetime
+             user_doc = {
+                 "name": name,
+                 "emp_id": emp_id,
+                 "registered_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                 "total_images": count,
+                 "status": "Registered"
+             }
+             # Use update_one with upsert to avoid duplicates and update if exists
+             users_col.update_one(
+                 {"name": name, "emp_id": emp_id},
+                 {"$set": user_doc},
+                 upsert=True
+             )
+             print(f"DEBUG: User {name} saved to MongoDB.")
     
     pkl_file = os.path.join(dataset_path, "representations_vgg_face.pkl")
     if os.path.exists(pkl_file):

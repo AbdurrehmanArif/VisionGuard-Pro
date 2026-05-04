@@ -33,11 +33,13 @@ try:
     db = mongo_client["vision_guard"]
     alerts_col = db["alerts"]
     emails_col = db["emails"]
+    users_col = db["users"]
     mongo_client.admin.command('ping')
 except Exception as e:
     st.error(f"MongoDB connection failed: {e}")
     alerts_col = None
     emails_col = None
+    users_col = None
 
 # ============================================
 # PAGE CONFIG
@@ -473,9 +475,13 @@ with tab1:
             cap = cv2.VideoCapture(src)
             
         cap.set(cv2.CAP_PROP_FPS,          30)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH,  320)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
         cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
+
+        # Flush stale frames from camera buffer on startup
+        for _ in range(3):
+            cap.grab()
 
         frame_idx = 0
         mobile_in_use = False
@@ -495,10 +501,10 @@ with tab1:
                 st.error("Camera not open!")
                 break
 
-            frame = cv2.resize(frame, (640, 480))
+            frame = cv2.resize(frame, (320, 240))
             
-            # PERFORMANCE FIX: Only run heavy AI every 5 frames to prevent processing lag
-            if frame_idx % 5 == 0:
+            # PERFORMANCE FIX: Only run heavy AI every 8 frames
+            if frame_idx % 8 == 0:
                 frame, mobile_in_use, phone_count, person_count, detected_name, last_draw_actions = run_detection(
                     frame, conf_thresh, wrist_dist
                 )
@@ -629,11 +635,13 @@ with tab1:
                         (frame.shape[1]-120, 38),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,0), 2)
 
-            # Update UI elements only every 2 frames to reduce Streamlit WebSocket lag
-            if frame_idx % 2 == 0:
-                # Show frame
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frame_placeholder.image(frame_rgb, channels="RGB", width="stretch")
+            # Update UI every 3 frames to reduce WebSocket payload
+            if frame_idx % 3 == 0:
+                # Compress frame as JPEG before sending to reduce WebSocket size
+                _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+                frame_rgb = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+                frame_rgb = cv2.cvtColor(frame_rgb, cv2.COLOR_BGR2RGB)
+                frame_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
 
                 # Live stats
                 m1.markdown(f'<div class="metric-card"><div class="metric-value">{person_count}</div><div class="metric-label">👤 Persons</div></div>', unsafe_allow_html=True)
@@ -978,7 +986,7 @@ with tab5:
             if reg_name and reg_id:
                 from face_handler import register_person
                 src = int(cam_reg) if cam_reg.isdigit() else cam_reg
-                register_person(reg_name, reg_id, src)
+                register_person(reg_name, reg_id, src, users_col)
             else:
                 st.warning("Please enter Name and ID to proceed.")
                 
