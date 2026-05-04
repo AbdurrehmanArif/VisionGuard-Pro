@@ -147,27 +147,21 @@ st.markdown("""
 # ============================================
 # SESSION STATE INIT
 # ============================================
-if 'alert_log' not in st.session_state:
+def get_all_alerts():
     if alerts_col is not None:
-        st.session_state.alert_log = list(alerts_col.find({}, {"_id": 0}).sort("_id", 1))
-    else:
-        st.session_state.alert_log = []
+        return list(alerts_col.find({}, {"_id": 0}).sort("_id", -1))
+    return []
 
-if 'email_log' not in st.session_state:
+def get_all_emails():
     if emails_col is not None:
-        st.session_state.email_log = list(emails_col.find({}, {"_id": 0}).sort("_id", 1))
-    else:
-        st.session_state.email_log = []
+        return list(emails_col.find({}, {"_id": 0}).sort("_id", -1))
+    return []
 
-if 'total_alerts' not in st.session_state:
-    st.session_state.total_alerts = len(st.session_state.alert_log)
-if 'total_emails' not in st.session_state:
-    st.session_state.total_emails = len([e for e in st.session_state.email_log if '✅' in e.get('status', '')])
 if 'detection_start' not in st.session_state: st.session_state.detection_start = None
 if 'last_seen'       not in st.session_state: st.session_state.last_seen       = None
 if 'alert_triggered' not in st.session_state: st.session_state.alert_triggered = False
 if 'camera_active'   not in st.session_state: st.session_state.camera_active   = False
-if 'person_identities' not in st.session_state: st.session_state.person_identities = {} # track_id -> {name, last_check}
+if 'person_identities' not in st.session_state: st.session_state.person_identities = {}
 
 
 os.makedirs('screenshots', exist_ok=True)
@@ -566,10 +560,8 @@ with tab1:
                         'person':   person_name,
                         'file':     filename
                     }
-                    st.session_state.alert_log.append(alert_doc)
                     if alerts_col is not None:
                         alerts_col.insert_one(alert_doc.copy())
-
 
                     if email_enabled and email_sender and email_password and email_receiver:
                         ok, msg = send_email(filename, elapsed,
@@ -582,10 +574,8 @@ with tab1:
                             'status': '✅ Sent' if ok else f'❌ {msg}',
                             'file':   os.path.basename(filename)
                         }
-                        st.session_state.email_log.append(email_doc)
                         if emails_col is not None:
                             emails_col.insert_one(email_doc.copy())
-                        if ok: st.session_state.total_emails += 1
 
                     st.session_state.detection_start = None
                     st.session_state.last_seen       = None
@@ -643,16 +633,21 @@ with tab1:
                 frame_rgb = cv2.cvtColor(frame_rgb, cv2.COLOR_BGR2RGB)
                 frame_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
 
-                # Live stats
+                # Live stats (Direct from MongoDB)
                 m1.markdown(f'<div class="metric-card"><div class="metric-value">{person_count}</div><div class="metric-label">👤 Persons</div></div>', unsafe_allow_html=True)
                 m2.markdown(f'<div class="metric-card"><div class="metric-value">{phone_count}</div><div class="metric-label">📱 Phones</div></div>', unsafe_allow_html=True)
-                m3.markdown(f'<div class="metric-card"><div class="metric-value">{st.session_state.total_alerts}</div><div class="metric-label">🚨 Total Alerts</div></div>', unsafe_allow_html=True)
-                m4.markdown(f'<div class="metric-card"><div class="metric-value">{st.session_state.total_emails}</div><div class="metric-label">📧 Emails Sent</div></div>', unsafe_allow_html=True)
+                
+                db_total_alerts = alerts_col.count_documents({}) if alerts_col else 0
+                db_total_emails = emails_col.count_documents({"status": {"$regex": "✅"}}) if emails_col else 0
+                
+                m3.markdown(f'<div class="metric-card"><div class="metric-value">{db_total_alerts}</div><div class="metric-label">🚨 Total Alerts</div></div>', unsafe_allow_html=True)
+                m4.markdown(f'<div class="metric-card"><div class="metric-value">{db_total_emails}</div><div class="metric-label">📧 Emails Sent</div></div>', unsafe_allow_html=True)
 
-                # Live log
-                if st.session_state.alert_log:
+                # Live log (Direct from MongoDB)
+                recent_alerts = get_all_alerts()[:5]
+                if recent_alerts:
                     log_html = ""
-                    for entry in st.session_state.alert_log[-5:][::-1]:
+                    for entry in recent_alerts:
                         log_html += f'<div class="log-entry">⏰ {entry["time"]} — {entry["event"]}</div>'
                     log_placeholder.markdown(log_html, unsafe_allow_html=True)
 
@@ -664,16 +659,20 @@ with tab1:
 with tab2:
     st.subheader("📊 Detection Statistics")
 
+    # Sidebar Overview (Direct from MongoDB)
+    total_alerts_db = alerts_col.count_documents({}) if alerts_col else 0
+    total_emails_db = emails_col.count_documents({"status": {"$regex": "✅"}}) if emails_col else 0
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.markdown(f'<div class="metric-card"><div class="metric-value">{st.session_state.total_alerts}</div><div class="metric-label">🚨 Total Alerts</div></div>', unsafe_allow_html=True)
-    c2.markdown(f'<div class="metric-card"><div class="metric-value">{st.session_state.total_emails}</div><div class="metric-label">📧 Emails Sent</div></div>', unsafe_allow_html=True)
+    c1.markdown(f'<div class="metric-card"><div class="metric-value">{total_alerts_db}</div><div class="metric-label">🚨 Total Alerts</div></div>', unsafe_allow_html=True)
+    c2.markdown(f'<div class="metric-card"><div class="metric-value">{total_emails_db}</div><div class="metric-label">📧 Emails Sent</div></div>', unsafe_allow_html=True)
     c3.markdown(f'<div class="metric-card"><div class="metric-value">{len(os.listdir("screenshots"))}</div><div class="metric-label">📸 Screenshots</div></div>', unsafe_allow_html=True)
-    c4.markdown(f'<div class="metric-card"><div class="metric-value">{len(st.session_state.alert_log)}</div><div class="metric-label">📋 Log Entries</div></div>', unsafe_allow_html=True)
+    c4.markdown(f'<div class="metric-card"><div class="metric-value">{total_alerts_db}</div><div class="metric-label">📋 Log Entries</div></div>', unsafe_allow_html=True)
 
     st.divider()
 
-    df = pd.DataFrame(st.session_state.alert_log) if st.session_state.alert_log else pd.DataFrame()
-    alerts_only = df[df['event'].str.startswith('🚨 ALERT')] if not df.empty else pd.DataFrame()
+    df = pd.DataFrame(get_all_alerts())
+    alerts_only = df[df['event'].str.startswith('🚨 ALERT', na=False)] if not df.empty else pd.DataFrame()
 
     st.markdown("### 📇 Registered Persons Directory")
     registered_people = []
@@ -819,10 +818,11 @@ with tab_search:
         if search_query != "-- Select Person --":
             st.markdown(f"### Analysis for: **{search_query.replace('_', ' - ')}**")
             
-            df = pd.DataFrame(st.session_state.alert_log) if st.session_state.alert_log else pd.DataFrame()
+            all_alerts = get_all_alerts()
+            df = pd.DataFrame(all_alerts)
             person_alerts = pd.DataFrame()
             if not df.empty and 'person' in df.columns:
-                person_alerts = df[(df['event'].str.startswith('🚨 ALERT')) & (df['person'] == search_query)]
+                person_alerts = df[(df['event'].str.startswith('🚨 ALERT', na=False)) & (df['person'] == search_query)]
             
             c1, c2, c3 = st.columns(3)
             total_distractions = len(person_alerts)
@@ -948,11 +948,12 @@ with tab3:
 with tab4:
     st.subheader("📧 Email Logs")
 
-    if st.session_state.email_log:
-        df_email = pd.DataFrame(st.session_state.email_log)
+    email_logs_db = get_all_emails()
+    if email_logs_db:
+        df_email = pd.DataFrame(email_logs_db)
         st.dataframe(
             df_email,
-            width="stretch",
+            use_container_width=True,
             column_config={
                 'time':   'Time',
                 'to':     'Sent To',
@@ -961,8 +962,8 @@ with tab4:
             }
         )
 
-        sent   = len([e for e in st.session_state.email_log if '✅' in e['status']])
-        failed = len([e for e in st.session_state.email_log if '❌' in e['status']])
+        sent   = len([e for e in email_logs_db if '✅' in e['status']])
+        failed = len([e for e in email_logs_db if '❌' in e['status']])
 
         c1, c2 = st.columns(2)
         c1.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#00cc44">{sent}</div><div class="metric-label">✅ Sent</div></div>', unsafe_allow_html=True)
